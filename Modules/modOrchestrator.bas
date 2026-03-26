@@ -174,7 +174,7 @@ Public Sub RunGenerateLeads_V4()
     ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4
 
     If Err.Number = 0 Then
-        MsgBox "Fichier genere et enregistre avec succes.", vbInformation
+        MsgBox "Fichier généré et enregistré avec succès.", vbInformation
     End If
 
 CleanExit:
