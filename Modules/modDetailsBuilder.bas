@@ -139,7 +139,7 @@ End Sub
 
 Private Sub InsertDetailBlock(ByVal ws As Worksheet, ByVal posteRow As Long, _
                               ByVal dict As Object, ByVal isBS As Boolean)
-    Dim cnt As Long
+    Dim cnt      As Long
     Dim firstRow As Long, lastRow As Long
     Dim outArr() As Variant
     Dim i As Long, k As Variant, entry As Variant
@@ -151,29 +151,56 @@ Private Sub InsertDetailBlock(ByVal ws As Worksheet, ByVal posteRow As Long, _
     On Error GoTo InsertEH
     firstRow = posteRow + 1
     lastRow  = posteRow + cnt
+
+    ' Sauvegarder la bordure superieure du sous-total AVANT insertion.
+    ' Avant insertion, le sous-total est a firstRow. Apres, il sera a lastRow+1.
+    ' On sauvegarde aussi la bordure basse du poste (separateur potentiel herite).
+    Dim stStyle  As Variant, stColor As Long, stWeight As Variant
+    On Error Resume Next
+    stStyle  = ws.Rows(firstRow).Borders(xlEdgeTop).LineStyle
+    stColor  = ws.Rows(firstRow).Borders(xlEdgeTop).Color
+    stWeight = ws.Rows(firstRow).Borders(xlEdgeTop).Weight
+    On Error GoTo InsertEH
+
     ws.Rows(firstRow & ":" & lastRow).Insert Shift:=xlDown
+    ' Apres insertion : sous-total est desormais a lastRow+1
 
     ReDim outArr(1 To cnt, 1 To 6)
     i = 0
     For Each k In dict.Keys
         i = i + 1
         entry = dict(k)
-        ' Col B : "Compte - Libelle"
         outArr(i, 2) = CStr(entry(0)) & " - " & CStr(entry(1))
         If isBS Then
-            ' BS : N en col E (5), N-1 en col F (6)
             outArr(i, 5) = entry(2)
             outArr(i, 6) = entry(3)
         Else
-            ' SIG : N en col C (3), N-1 en col E (5)
             outArr(i, 3) = entry(2)
             outArr(i, 5) = entry(3)
         End If
     Next k
 
     ws.Range(ws.Cells(firstRow, 1), ws.Cells(lastRow, 6)).Value = outArr
+
+    ' Nettoyer les bordures des lignes comptes inserees
+    ' (ne touche pas la bordure basse de la derniere ligne inseree)
     ClearInsertedAccountRowBorders ws, firstRow, lastRow
+
+    ' Restaurer la bordure superieure du sous-total (maintenant a lastRow+1)
+    On Error Resume Next
+    If Not IsError(stStyle) And CLng(stStyle) <> xlNone Then
+        With ws.Rows(lastRow + 1).Borders(xlEdgeTop)
+            .LineStyle = stStyle
+            .Color     = stColor
+            .Weight    = stWeight
+        End With
+    End If
+    On Error GoTo InsertEH
+
     ws.Rows(firstRow & ":" & lastRow).Font.Size = 9
+    ws.Rows(firstRow & ":" & lastRow).Font.Italic = True
+    ' Decalage visuel : col B legèrement indentee par rapport au poste parent
+    ws.Range(ws.Cells(firstRow, "B"), ws.Cells(lastRow, "B")).IndentLevel = 2
     RegisterDetailRange ws, firstRow, lastRow
     ws.Rows(firstRow & ":" & lastRow).Group
     Exit Sub
@@ -184,12 +211,15 @@ InsertEH:
 End Sub
 
 Private Sub ClearInsertedAccountRowBorders(ByVal ws As Worksheet, ByVal firstRow As Long, ByVal lastRow As Long)
-    Dim r As Long
+    ' Efface les bordures des lignes de comptes inserees.
+    ' Principe :
+    '   - Supprime la bordure haute du bloc (haut de firstRow)
+    '   - Supprime les separations internes entre lignes comptes (xlInsideHorizontal)
+    '   - NE TOUCHE PAS xlEdgeBottom de lastRow : c est le separateur visuel
+    '     avec le sous-total situe en dessous. Le restaurer explicitement est
+    '     gere par InsertDetailBlock via la sauvegarde/restauration.
     On Error Resume Next
-    For r = firstRow To lastRow
-        ws.Range(ws.Cells(r, 1), ws.Cells(r, 26)).Borders(xlEdgeTop).LineStyle    = xlNone
-        ws.Range(ws.Cells(r, 1), ws.Cells(r, 26)).Borders(xlEdgeBottom).LineStyle = xlNone
-    Next r
+    ws.Range(ws.Cells(firstRow, 1), ws.Cells(lastRow, 26)).Borders(xlEdgeTop).LineStyle          = xlNone
     ws.Range(ws.Cells(firstRow, 1), ws.Cells(lastRow, 26)).Borders(xlInsideHorizontal).LineStyle = xlNone
     On Error GoTo 0
 End Sub

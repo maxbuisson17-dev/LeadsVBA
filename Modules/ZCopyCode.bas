@@ -10,14 +10,14 @@ Sub Exporter_Tout_Le_Code_VBA()
     Dim dossierClasses As String
     Dim dossierForms As String
 
-    ' === DOSSIER PRINCIPAL (à modifier si tu veux) ===
+    ' === DOSSIER PRINCIPAL (ï¿½ modifier si tu veux) ===
     chemin = "C:\Users\M.Buisson\Desktop\26 Leads project\VBA Claude"
 
 
-    ' Crée l'objet FileSystem
+    ' Crï¿½e l'objet FileSystem
     Set fso = CreateObject("Scripting.FileSystemObject")
 
-    ' Crée les dossiers si absents
+    ' Crï¿½e les dossiers si absents
     If Not fso.FolderExists(chemin) Then fso.CreateFolder chemin
 
     dossierModules = chemin & "Modules\"
@@ -55,7 +55,7 @@ Sub Exporter_Tout_Le_Code_VBA()
     Next comp
 
 
-    MsgBox "Export terminé !" & vbCrLf & _
+    MsgBox "Export terminÃ© !" & vbCrLf & _
            "Dossier : " & chemin, vbInformation
 
 End Sub

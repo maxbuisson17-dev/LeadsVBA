@@ -11,12 +11,16 @@ Public Sub ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4()
     Dim wb As Workbook, wbOut As Workbook
     Dim wsSrc As Worksheet, wsDest As Worksheet
     Dim delErr As String
+    Dim errNum As Long, errDesc As String
     Dim firstCreated As Boolean
     Dim exportMode As eExportMode
     Dim oldAlerts As Boolean, oldScreen As Boolean
 
     oldAlerts = Application.DisplayAlerts
     oldScreen = Application.ScreenUpdating
+    gLastExportSucceeded = False
+    Set gLastExportedWorkbook = Nothing
+    modKETrace.LogKE "START | gExportPDF=" & CStr(gExportPDF) & " | gBalancePath=" & gBalancePath, "ExportValuesCopy"
 
     ' --- Chemin de sauvegarde ---
     folder = GetFolderFromPath(gBalancePath)
@@ -26,10 +30,16 @@ Public Sub ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4()
     If Len(defaultName) > 180 Then defaultName = Left$(defaultName, 180)
 
     pickedPath = PromptSaveAsPath_NoUI(folder & defaultName)
-    If pickedPath = False Then GoTo CLEAN_EXIT
+    If VarType(pickedPath) = vbBoolean Then
+        modKETrace.LogKE "PromptSaveAsPath_NoUI returned Boolean=False (cancel)", "ExportValuesCopy"
+        If pickedPath = False Then GoTo CLEAN_EXIT
+    Else
+        modKETrace.LogKE "PromptSaveAsPath_NoUI returned path=" & CStr(pickedPath), "ExportValuesCopy"
+    End If
 
     finalPath = CStr(pickedPath)
     If LCase(Right(finalPath, 5)) <> ".xlsx" Then finalPath = finalPath & ".xlsx"
+    modKETrace.LogKE "finalPath=" & finalPath, "ExportValuesCopy"
 
     ' Verifier que le fichier cible n'est pas deja ouvert
     For Each wb In Application.Workbooks
@@ -56,8 +66,10 @@ Public Sub ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4()
     On Error GoTo EH
 
     ' --- Creer wbOut et copier les onglets en VALEURS ---
+    modKETrace.LogKE "Before Workbooks.Add", "ExportValuesCopy"
     Set wbOut = Workbooks.Add(xlWBATWorksheet)
     wbOut.Worksheets(1).Name = "TMP_DELETE"
+    modKETrace.LogKE "wbOut created | Name=" & wbOut.Name, "ExportValuesCopy"
 
     firstCreated = False
     exportMode = GetExportModeFromFrmLeadMeta()
@@ -95,10 +107,16 @@ Public Sub ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4()
     On Error GoTo EH
     If Not wsDest Is Nothing Then PrepareSIG_ForExport wbOut, wsDest
 
-    ' --- Nettoyer onglets superflus ---
+    ' --- Nettoyer onglets exclus (centralise via IsExcludedFromExport) ---
     Application.DisplayAlerts = False
-    DeleteSheetIfExists wbOut, "Param"
-    DeleteSheetIfExists wbOut, "Mapping"
+    Dim wsClean As Worksheet
+    For Each wsClean In wbOut.Worksheets
+        If IsExcludedFromExport(UCase$(Trim$(wsClean.Name))) Then
+            On Error Resume Next
+            wsClean.Delete
+            On Error GoTo 0
+        End If
+    Next wsClean
     DeleteSheetIfExists wbOut, "TMP_DELETE"
     Application.DisplayAlerts = True
 
@@ -137,35 +155,376 @@ Public Sub ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4()
     ' --- Replier tous les groupes a niveau 1 ---
     CollapseAllGroupedSheetsToLevel1 wbOut
 
+    ' --- Marquer les sections BS / BS_detail et neutraliser les sauts de page visibles ---
+    RefreshBSMarkersAndPageBreaks wbOut
+
     ' --- Masquer grilles et finaliser affichage ---
     SetGridlinesOff_AllSheetsViews wbOut
+    NormalizeAllSheetViews wbOut
+
+    ' --- Activer BS comme onglet initial (sauvegarde avec BS actif -> ouverture sur BS) ---
+    On Error Resume Next
+    wbOut.Worksheets(SH_BS).Activate
+    On Error GoTo EH
 
     ' --- Enregistrer ---
+    modKETrace.LogKE "Before SaveAs | finalPath=" & finalPath, "ExportValuesCopy"
     Application.DisplayAlerts = True
     wbOut.SaveAs Filename:=finalPath, FileFormat:=xlOpenXMLWorkbook, Local:=True
     Application.DisplayAlerts = False
+    Set gLastExportedWorkbook = wbOut
+    gLastExportSucceeded = True
+    modKETrace.LogKE "After SaveAs | SavedPath=" & finalPath, "ExportValuesCopy"
 
-    ' --- Ouvrir le wbOut, zoom 75% ---
-    On Error Resume Next
-    wbOut.Activate
-    If wbOut.Windows.Count > 0 Then
-        wbOut.Windows(1).Zoom = 75
-        wbOut.Windows(1).DisplayGridlines = False
+    ' --- Export PDF si demande ---
+    If gExportPDF Then
+        modKETrace.LogKE "Before ExportPDF_FromWbOut", "ExportValuesCopy"
+        ExportPDF_FromWbOut wbOut, finalPath
+        modKETrace.LogKE "After ExportPDF_FromWbOut", "ExportValuesCopy"
     End If
-    On Error GoTo EH
+
+    ' --- Activer BS et ajuster la vue du wbOut en sortie ---
+    ' ScreenUpdating doit etre True avant Activate pour que l'affichage bascule
+    ' effectivement sur wbOut. Si on attend CLEAN_EXIT, Excel rafraichit sur
+    ' la derniere fenetre visible (ThisWorkbook) et non sur wbOut.
+    Application.DisplayAlerts  = oldAlerts
+    Application.ScreenUpdating = oldScreen
+    ActivateWorkbookOnBSView wbOut
 
 CLEAN_EXIT:
     Application.DisplayAlerts  = oldAlerts
     Application.ScreenUpdating = oldScreen
     Exit Sub
 EH:
-    modKETrace.LogKE "ERROR " & Err.Number & " : " & Err.Description, "ExportValuesCopy"
-    If Len(Trim$(Err.Description)) > 0 Then
-        MsgBox "Erreur Export : " & Err.Number & vbCrLf & Err.Description, vbCritical
+    errNum = Err.Number
+    errDesc = Err.Description
+    modKETrace.LogKE "ERROR " & errNum & " : " & errDesc, "ExportValuesCopy"
+    If Len(Trim$(errDesc)) > 0 Then
+        MsgBox "Erreur Export : " & errNum & vbCrLf & errDesc, vbCritical
     End If
     Err.Clear
     Resume CLEAN_EXIT
 End Sub
+
+Public Sub ActivateWorkbookOnBSView(ByVal wbOut As Workbook)
+    Dim wsBS As Worksheet
+    Dim ws As Worksheet
+
+    If wbOut Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    Set wsBS = wbOut.Worksheets(SH_BS)
+    If wsBS Is Nothing Then Exit Sub
+
+    wbOut.Activate
+    For Each ws In wbOut.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            ws.Activate
+            ws.DisplayPageBreaks = False
+            If Not ActiveWindow Is Nothing Then
+                ActiveWindow.View = xlNormalView
+                ActiveWindow.DisplayGridlines = False
+                ActiveWindow.ScrollRow = 1
+                ActiveWindow.ScrollColumn = 1
+            End If
+            ws.Range("A1").Select
+        End If
+    Next ws
+
+    wbOut.Activate
+    wsBS.Activate
+    wsBS.DisplayPageBreaks = False
+    wsBS.Range("B2").Select
+
+    If wbOut.Windows.Count > 0 Then
+        With wbOut.Windows(1)
+            .View = xlNormalView
+            .Zoom = 75
+            .DisplayGridlines = False
+            .ScrollRow = 1
+            .ScrollColumn = 1
+        End With
+    End If
+    On Error GoTo 0
+End Sub
+
+' ============================================================
+' EXPORT PDF
+' Appele si gExportPDF = True.
+' Feuilles exportees : SOMMAIRE (en premier si visible), BS, BS_detail,
+' et onglets GestTable visibles (SIG, SIG_detail, CAF, BFR, TFT).
+' Mise en page : A4 portrait, 1 page de large, zone depuis debut UsedRange jusqu a
+'                la derniere colonne contenant des valeurs numeriques.
+' Nom PDF : "[nom xlsx] - pdf.pdf" dans le meme dossier.
+' ============================================================
+Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String)
+    Dim pdfPath       As String
+    Dim delErr        As String
+    Dim ws            As Worksheet
+    Dim nm            As String
+    Dim names()       As String
+    Dim selectNames   As Variant
+    Dim printableList As String
+    Dim count         As Long
+    Dim i             As Long
+    Dim startCol      As Long
+    Dim lastNumCol    As Long
+    Dim pArea         As String
+    Dim expErr        As Long
+    Dim expDesc       As String
+    Dim setupErr      As Long
+    Dim setupDesc     As String
+    Dim errNum        As Long
+    Dim errDesc       As String
+
+    On Error GoTo EH
+
+    ' Chemin PDF : meme dossier, meme nom de base
+    If LCase$(Right$(xlsxPath, 5)) = ".xlsx" Then
+        pdfPath = Left$(xlsxPath, Len(xlsxPath) - 5) & ".pdf"
+    Else
+        pdfPath = xlsxPath & ".pdf"
+    End If
+    modKETrace.LogKE "START | xlsxPath=" & xlsxPath & " | pdfPath=" & pdfPath, "ExportPDF_FromWbOut"
+
+    If FileExists(pdfPath) Then
+        If Not TryDeleteFile(pdfPath, delErr) Then
+            Err.Raise vbObjectError + 1400, "ExportPDF_FromWbOut", "Impossible de supprimer le PDF existant : " & delErr
+        End If
+    End If
+
+    ' Collecter SOMMAIRE, BS, BS_detail et GestTable visibles
+    count = 0
+    For Each ws In wbOut.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            nm = LCase$(Trim$(ws.Name))
+            If nm = "sommaire" Or nm = "bs" Or nm = "bs_detail" Or IsGestTableSheet(ws.Name) Then
+                count = count + 1
+            End If
+        End If
+    Next ws
+    modKETrace.LogKE "Printable sheet count=" & CStr(count), "ExportPDF_FromWbOut"
+    If count = 0 Then
+        Err.Raise vbObjectError + 1401, "ExportPDF_FromWbOut", "Aucune feuille imprimable trouvee dans wbOut."
+    End If
+
+    ReDim names(0 To count - 1)
+    ReDim selectNames(0 To count - 1)
+    i = 0
+
+    ' SOMMAIRE doit sortir en premiere page si l'onglet existe et est visible.
+    For Each ws In wbOut.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            nm = LCase$(Trim$(ws.Name))
+            If nm = "sommaire" Then
+                names(i) = ws.Name
+                selectNames(i) = ws.Name
+                If Len(printableList) > 0 Then printableList = printableList & ","
+                printableList = printableList & ws.Name
+                i = i + 1
+                Exit For
+            End If
+        End If
+    Next ws
+
+    For Each ws In wbOut.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            nm = LCase$(Trim$(ws.Name))
+            If nm <> "sommaire" Then
+                If nm = "bs" Or nm = "bs_detail" Or IsGestTableSheet(ws.Name) Then
+                    names(i) = ws.Name
+                    selectNames(i) = ws.Name
+                    If Len(printableList) > 0 Then printableList = printableList & ","
+                    printableList = printableList & ws.Name
+                    i = i + 1
+                End If
+            End If
+        End If
+    Next ws
+    modKETrace.LogKE "Printable sheets=[" & printableList & "]", "ExportPDF_FromWbOut"
+
+    ' Mise en page (PrintCommunication=False evite erreurs driver pendant PageSetup)
+    On Error Resume Next
+    Application.PrintCommunication = False
+    On Error GoTo EH
+
+    For i = 0 To UBound(names)
+        Set ws = wbOut.Worksheets(names(i))
+        modKETrace.LogKE "PageSetup start | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+
+        ws.Activate
+        modKETrace.LogKE "Activate done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        On Error Resume Next
+        ws.Outline.ShowLevels RowLevels:=8, ColumnLevels:=8
+        If Err.Number <> 0 Then
+            setupErr = Err.Number
+            setupDesc = Err.Description
+            On Error GoTo EH
+            modKETrace.LogKE "ShowLevels error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
+            Err.Raise setupErr, "ExportPDF_FromWbOut", "ShowLevels sur '" & ws.Name & "' : " & setupDesc
+        End If
+        On Error GoTo EH
+        modKETrace.LogKE "ShowLevels done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+
+        If LCase$(ws.Name) = "bs" Or LCase$(ws.Name) = "bs_detail" Then
+            On Error Resume Next
+            ws.Columns("C:D").Hidden = True
+            If Err.Number <> 0 Then
+                setupErr = Err.Number
+                setupDesc = Err.Description
+                On Error GoTo EH
+                modKETrace.LogKE "Hide C:D error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
+                Err.Raise setupErr, "ExportPDF_FromWbOut", "Hide C:D sur '" & ws.Name & "' : " & setupDesc
+            End If
+            On Error GoTo EH
+            modKETrace.LogKE "Hide C:D done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        End If
+
+        startCol = ws.UsedRange.Column
+        modKETrace.LogKE "UsedRange startCol=" & CStr(startCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        lastNumCol = PDF_FindLastNumCol(ws)
+        modKETrace.LogKE "lastNumCol=" & CStr(lastNumCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        If lastNumCol < startCol Then lastNumCol = startCol
+        pArea = PDF_ColLtr(ws, startCol) & ":" & PDF_ColLtr(ws, lastNumCol)
+        modKETrace.LogKE "PageSetup area | Sheet=" & ws.Name & " | PrintArea=" & pArea, "ExportPDF_FromWbOut"
+
+        On Error Resume Next
+        Err.Clear
+        ws.PageSetup.Zoom = False
+        With ws.PageSetup
+            .PrintArea = pArea
+            .Orientation = xlPortrait
+            .PaperSize = xlPaperA4
+            .LeftMargin = Application.CentimetersToPoints(1)
+            .RightMargin = Application.CentimetersToPoints(1)
+            .TopMargin = Application.CentimetersToPoints(1.5)
+            .BottomMargin = Application.CentimetersToPoints(1.5)
+            .HeaderMargin = Application.CentimetersToPoints(0.5)
+            .FooterMargin = Application.CentimetersToPoints(0.5)
+            .FitToPagesWide = 1
+            .FitToPagesTall = 0
+        End With
+        setupErr = Err.Number
+        setupDesc = Err.Description
+        On Error GoTo EH
+
+        If setupErr <> 0 Then
+            modKETrace.LogKE "PageSetup error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
+            Err.Raise setupErr, "ExportPDF_FromWbOut", "PageSetup sur '" & ws.Name & "' : " & setupDesc
+        End If
+
+        modKETrace.LogKE "PageSetup done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        Set ws = Nothing
+    Next i
+
+    On Error Resume Next
+    Application.PrintCommunication = True
+    On Error GoTo EH
+
+    On Error Resume Next
+    Application.PrintCommunication = False
+    On Error GoTo EH
+    For i = 0 To UBound(names)
+        Set ws = wbOut.Worksheets(names(i))
+        ApplyHeaderBySheet ws
+    Next i
+    On Error Resume Next
+    Application.PrintCommunication = True
+    On Error GoTo EH
+
+    modKETrace.LogKE "Before Sheets(selectNames).Select", "ExportPDF_FromWbOut"
+    wbOut.Sheets(selectNames).Select
+
+    On Error Resume Next
+    Err.Clear
+    modKETrace.LogKE "Before ExportAsFixedFormat", "ExportPDF_FromWbOut"
+    ActiveSheet.ExportAsFixedFormat _
+        Type:=xlTypePDF, _
+        Filename:=pdfPath, _
+        Quality:=xlQualityStandard, _
+        IncludeDocProperties:=False, _
+        IgnorePrintAreas:=False, _
+        OpenAfterPublish:=False
+    expErr = Err.Number
+    expDesc = Err.Description
+    On Error GoTo EH
+    modKETrace.LogKE "After ExportAsFixedFormat | Err=" & CStr(expErr) & " | Desc=" & expDesc & " | Exists=" & CStr(FileExists(pdfPath)), "ExportPDF_FromWbOut"
+
+    If Not FileExists(pdfPath) Then
+        If expErr <> 0 Then
+            Err.Raise expErr, "ExportPDF_FromWbOut", expDesc
+        Else
+            Err.Raise vbObjectError + 1402, "ExportPDF_FromWbOut", "ExportAsFixedFormat n'a retourne aucune erreur, mais aucun PDF n'a ete cree."
+        End If
+    End If
+
+    ' Restaurer mise en page
+    On Error Resume Next
+    For i = 0 To UBound(names)
+        Set ws = wbOut.Worksheets(names(i))
+        If Not ws Is Nothing Then
+            ws.PageSetup.PrintArea = ""
+            ws.PageSetup.Zoom = 100
+            ws.Outline.ShowLevels RowLevels:=1, ColumnLevels:=1
+            If LCase$(ws.Name) = "bs" Or LCase$(ws.Name) = "bs_detail" Then
+                ws.Columns("C:D").Hidden = True
+            End If
+        End If
+        Set ws = Nothing
+    Next i
+    On Error GoTo EH
+
+    wbOut.Worksheets(names(0)).Select
+    modKETrace.LogKE "SUCCESS | pdfPath=" & pdfPath, "ExportPDF_FromWbOut"
+    Exit Sub
+EH:
+    errNum = Err.Number
+    errDesc = Err.Description
+    On Error Resume Next
+    Application.PrintCommunication = True
+    modKETrace.LogKE "ERROR PDF " & errNum & " : " & errDesc, "ExportPDF_FromWbOut"
+    On Error GoTo 0
+    MsgBox "Erreur export PDF (" & errNum & ") :" & vbCrLf & errDesc, vbCritical
+End Sub
+
+' Detecte la derniere colonne contenant au moins une valeur numerique non nulle
+' (scan de la ligne 2 au bas de UsedRange pour exclure les en-tetes texte).
+Private Function PDF_FindLastNumCol(ByVal ws As Worksheet) As Long
+    Dim lastC As Long, lastR As Long
+    Dim c As Long, r As Long
+    Dim v As Variant
+
+    lastC = ws.UsedRange.Column + ws.UsedRange.Columns.Count - 1
+    lastR = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    If lastR < 2 Then lastR = 2
+
+    For c = lastC To 1 Step -1
+        For r = 2 To lastR
+            v = ws.Cells(r, c).Value
+            ' VBA evalue tous les operands de And :
+            ' CDbl(v) peut donc lever une erreur 13 si la cellule contient une erreur Excel.
+            If Not IsError(v) Then
+                If Not IsEmpty(v) Then
+                    If IsNumeric(v) Then
+                        If CDbl(v) <> 0 Then
+                            PDF_FindLastNumCol = c
+                            Exit Function
+                        End If
+                    End If
+                End If
+            End If
+        Next r
+    Next c
+
+    PDF_FindLastNumCol = lastC  ' fallback : derniere colonne utilisee
+End Function
+
+' Convertit un index de colonne en lettre(s) (ex. 8 -> "H").
+Private Function PDF_ColLtr(ByVal ws As Worksheet, ByVal colIdx As Long) As String
+    Dim addr As String
+    addr = ws.Cells(1, colIdx).Address  ' ex: "$H$1"
+    PDF_ColLtr = Mid$(addr, 2, InStr(2, addr, "$") - 2)
+End Function
 
 ' ============================================================
 ' HELPERS INTERNES
@@ -204,11 +563,19 @@ EH:
     Resume CleanExit
 End Sub
 
+' Liste centralisee des onglets internes jamais exportes vers wbOut.
+' C'est ici et uniquement ici qu'on ajoute/retire un onglet exclu.
+Private Function IsExcludedFromExport(ByVal nm As String) As Boolean
+    Select Case nm
+        Case "LEADS", "PARAM", "MAPPING", "ACCUEIL", "CENTRAL", "CONSOL"
+            IsExcludedFromExport = True
+    End Select
+End Function
+
 Private Function ShouldExportSheet(ByVal sheetName As String, ByVal mode As eExportMode) As Boolean
     Dim nm As String
     nm = UCase$(Trim$(sheetName))
-    ' Toujours exclure
-    If nm = "LEADS" Or nm = "PARAM" Or nm = "MAPPING" Or nm = "ACCUEIL" Then Exit Function
+    If IsExcludedFromExport(nm) Then Exit Function
     Select Case mode
         Case emAll
             ShouldExportSheet = True
@@ -242,6 +609,250 @@ End Sub
 
 Private Sub PrepareSIG_ForExport(ByVal wbOut As Workbook, ByVal wsSIG As Worksheet)
     ' Pas de prep specifique SIG pour l'instant
+End Sub
+
+Private Sub RefreshBSMarkersAndPageBreaks(ByVal wbOut As Workbook)
+    Dim unitLabel As String
+
+    unitLabel = GetBSMarkerUnitLabel()
+    ApplyBSMarkersAndPageBreaksToSheet wbOut, SH_BS, unitLabel
+    ApplyBSMarkersAndPageBreaksToSheet wbOut, "BS_detail", unitLabel
+End Sub
+
+Private Sub ApplyBSMarkersAndPageBreaksToSheet(ByVal wbOut As Workbook, ByVal sheetName As String, ByVal unitLabel As String)
+    Dim ws As Worksheet
+    Dim markers As Range
+
+    On Error Resume Next
+    Set ws = wbOut.Worksheets(sheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then Exit Sub
+
+    Set markers = BuildBSMarkerRange(ws, unitLabel)
+    DeleteSheetScopedNameIfExists ws, "BSMarker"
+    If markers Is Nothing Then
+        modKETrace.LogKE "BSMarker introuvable", "ApplyBSMarkersAndPageBreaksToSheet", ws.Name, wbOut.Name
+        Exit Sub
+    End If
+
+    ws.Names.Add Name:="BSMarker", RefersTo:="=" & markers.Address(True, True, xlA1, True)
+    ApplyBSPageBreaksFromMarker ws, markers
+    ws.DisplayPageBreaks = False
+    modKETrace.LogKE "BSMarker=" & markers.Address(False, False), "ApplyBSMarkersAndPageBreaksToSheet", ws.Name, wbOut.Name
+End Sub
+
+Private Function GetBSMarkerUnitLabel() As String
+    If gGenerateInKE Then
+        GetBSMarkerUnitLabel = "en KE"
+    Else
+        GetBSMarkerUnitLabel = "en euros"
+    End If
+End Function
+
+Private Function BuildBSMarkerRange(ByVal ws As Worksheet, ByVal unitLabel As String) As Range
+    Dim markerLabels As Variant
+    Dim i As Long
+    Dim foundCell As Range
+    Dim markers As Range
+    Dim seen As Object
+
+    Set seen = CreateObject("Scripting.Dictionary")
+    markerLabels = Array("ACTIF", "PASSIF", "COMPTE DE RESULTAT")
+
+    For i = LBound(markerLabels) To UBound(markerLabels)
+        Set foundCell = FindBSMarkerCell(ws, CStr(markerLabels(i)), unitLabel)
+        If Not foundCell Is Nothing Then
+            If Not seen.Exists(foundCell.Address(True, True, xlA1)) Then
+                seen.Add foundCell.Address(True, True, xlA1), True
+                If markers Is Nothing Then
+                    Set markers = foundCell
+                Else
+                    Set markers = Union(markers, foundCell)
+                End If
+            End If
+        End If
+    Next i
+
+    Set BuildBSMarkerRange = markers
+End Function
+
+Private Function FindBSMarkerCell(ByVal ws As Worksheet, ByVal markerLabel As String, ByVal unitLabel As String) As Range
+    Dim cell As Range
+    Dim foundCell As Range
+    Dim normalizedTarget As String
+    Dim normalizedFormula As String
+    Dim normalizedValue As String
+
+    If ws Is Nothing Then Exit Function
+    If Application.WorksheetFunction.CountA(ws.Cells) = 0 Then Exit Function
+
+    normalizedTarget = NormalizeBSMarkerText(markerLabel & " - " & unitLabel)
+    For Each cell In ws.UsedRange.Cells
+        normalizedValue = NormalizeBSMarkerText(CStr(cell.Value))
+        If normalizedValue = normalizedTarget Then
+            Set foundCell = cell
+            Exit For
+        End If
+
+        normalizedFormula = NormalizeBSMarkerText(CStr(cell.Formula))
+        If Len(normalizedFormula) > 0 Then
+            If InStr(1, normalizedFormula, NormalizeBSMarkerText(markerLabel), vbTextCompare) > 0 _
+               And InStr(1, normalizedFormula, "PARAM!$B$7", vbTextCompare) > 0 Then
+                Set foundCell = cell
+                Exit For
+            End If
+        End If
+    Next cell
+
+    Set FindBSMarkerCell = foundCell
+End Function
+
+Private Function NormalizeBSMarkerText(ByVal rawText As String) As String
+    Dim txt As String
+
+    txt = UCase$(Trim$(rawText))
+    txt = Replace(txt, vbCr, " ")
+    txt = Replace(txt, vbLf, " ")
+    txt = Replace(txt, ChrW$(160), " ")
+    txt = Replace(txt, ChrW$(201), "E")
+    txt = Replace(txt, ChrW$(200), "E")
+    txt = Replace(txt, ChrW$(202), "E")
+    txt = Replace(txt, ChrW$(203), "E")
+    txt = Replace(txt, ChrW$(192), "A")
+    txt = Replace(txt, ChrW$(194), "A")
+    txt = Replace(txt, ChrW$(196), "A")
+    txt = Replace(txt, ChrW$(206), "I")
+    txt = Replace(txt, ChrW$(207), "I")
+    txt = Replace(txt, ChrW$(212), "O")
+    txt = Replace(txt, ChrW$(214), "O")
+    txt = Replace(txt, ChrW$(217), "U")
+    txt = Replace(txt, ChrW$(219), "U")
+    txt = Replace(txt, ChrW$(220), "U")
+    txt = Replace(txt, ChrW$(199), "C")
+
+    Do While InStr(txt, "  ") > 0
+        txt = Replace(txt, "  ", " ")
+    Loop
+
+    NormalizeBSMarkerText = txt
+End Function
+
+Private Sub DeleteSheetScopedNameIfExists(ByVal ws As Worksheet, ByVal localName As String)
+    On Error Resume Next
+    ws.Names(localName).Delete
+    On Error GoTo 0
+End Sub
+
+Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet)
+    Dim rightHeaderText As String
+    Dim label           As String
+    Dim client          As String
+    Dim exoDate         As String
+    Dim metaLine        As String
+
+    On Error Resume Next
+    If ws Is Nothing Then Exit Sub
+
+    label   = EscapeHeaderText(GetHeaderDisplayName(ws.Name))
+    client  = Trim$(EscapeHeaderText(gClient))
+    exoDate = EscapeHeaderText(GetFormattedExerciceForHeader())
+
+    ' Construire la ligne client - date (client optionnel)
+    If Len(client) > 0 Then
+        metaLine = client & " - " & exoDate
+    Else
+        metaLine = exoDate
+    End If
+
+    ' Format en-tete droit :
+    '   ligne 1 : nom de l onglet en 12pt gras
+    '   ligne 2 : client - date en 9pt normal
+    ' NOTE : espace apres &09 obligatoire pour eviter la collision si metaLine
+    '        commence par un chiffre (&09"06..." serait lu &096 = 96pt par Excel)
+    rightHeaderText = "&16&B" & label & "&B" & Chr$(10) & "&12 " & metaLine
+
+    With ws.PageSetup
+        .DifferentFirstPageHeaderFooter = False
+        .OddAndEvenPagesHeaderFooter    = False
+        .LeftHeader   = vbNullString
+        .CenterHeader = vbNullString
+        .RightHeader  = vbNullString
+        .LeftFooter   = vbNullString
+        .CenterFooter = vbNullString
+        .RightFooter  = vbNullString
+        .RightHeader  = rightHeaderText
+    End With
+    On Error GoTo 0
+End Sub
+
+Private Function GetFormattedExerciceForHeader() As String
+    Dim dExo As Date
+
+    If IsValidExerciceDate_UI(gExercice, dExo) Then
+        GetFormattedExerciceForHeader = Format$(dExo, "dd/mm/yyyy")
+    Else
+        GetFormattedExerciceForHeader = gExercice
+    End If
+End Function
+
+Private Function GetHeaderDisplayName(ByVal sheetName As String) As String
+    Select Case UCase$(Trim$(sheetName))
+        Case "BS"
+            GetHeaderDisplayName = "Etats financiers"
+        Case "BS_DETAIL"
+            GetHeaderDisplayName = "Etats financiers d" & ChrW$(233) & "taill" & ChrW$(233) & "s"
+        Case "SIG"
+            GetHeaderDisplayName = "Soldes Interm" & ChrW$(233) & "diaires de gestion"
+        Case "SIG_DETAIL"
+            GetHeaderDisplayName = "Soldes Interm" & ChrW$(233) & "diaires de gestion d" & ChrW$(233) & "taill" & ChrW$(233) & "s"
+        Case Else
+            GetHeaderDisplayName = Replace(sheetName, "_detail", " d" & ChrW$(233) & "taill" & ChrW$(233) & "s")
+    End Select
+End Function
+
+Private Function EscapeHeaderText(ByVal rawText As String) As String
+    EscapeHeaderText = Replace(rawText, "&", "&&")
+End Function
+
+Private Sub ApplyBSPageBreaksFromMarker(ByVal ws As Worksheet, ByVal markers As Range)
+    Dim rowMap As Object
+    Dim cell As Range
+    Dim rows() As Long
+    Dim itemRows As Variant
+    Dim i As Long
+    Dim j As Long
+    Dim tmp As Long
+
+    If ws Is Nothing Or markers Is Nothing Then Exit Sub
+
+    Set rowMap = CreateObject("Scripting.Dictionary")
+    For Each cell In markers.Cells
+        If Not rowMap.Exists(CStr(cell.Row)) Then rowMap.Add CStr(cell.Row), CLng(cell.Row)
+    Next cell
+
+    If rowMap.Count = 0 Then Exit Sub
+
+    ws.ResetAllPageBreaks
+    ReDim rows(1 To rowMap.Count)
+    itemRows = rowMap.Items
+    For i = 0 To rowMap.Count - 1
+        rows(i + 1) = CLng(itemRows(i))
+    Next i
+
+    For i = LBound(rows) To UBound(rows) - 1
+        For j = i + 1 To UBound(rows)
+            If rows(j) < rows(i) Then
+                tmp = rows(i)
+                rows(i) = rows(j)
+                rows(j) = tmp
+            End If
+        Next j
+    Next i
+
+    ' Le premier marker ouvre deja la premiere page.
+    For i = LBound(rows) + 1 To UBound(rows)
+        If rows(i) > 1 Then ws.HPageBreaks.Add Before:=ws.Rows(rows(i))
+    Next i
 End Sub
 
 Public Sub BSX_HideRowsWhereGHBlank_InRanges(ByVal wsBS As Worksheet)
@@ -337,21 +948,6 @@ Public Sub CollapseAllGroupedSheetsToLevel1(ByVal wb As Workbook)
     Next ws
 End Sub
 
-Public Sub EnsureWorkingSheetsHidden(ByVal hideWorkSheets As Boolean)
-    On Error Resume Next
-    If hideWorkSheets Then
-        ThisWorkbook.Worksheets(SH_BG).Visible  = xlVeryHidden
-        ThisWorkbook.Worksheets(SH_BS).Visible  = xlVeryHidden
-        ThisWorkbook.Worksheets(SH_MAP).Visible = xlVeryHidden
-        ThisWorkbook.Worksheets(SH_HOME).Visible = xlSheetVisible
-    Else
-        ThisWorkbook.Worksheets(SH_BG).Visible  = xlSheetVisible
-        ThisWorkbook.Worksheets(SH_BS).Visible  = xlSheetVisible
-        ThisWorkbook.Worksheets(SH_MAP).Visible = xlSheetVisible
-        ThisWorkbook.Worksheets(SH_HOME).Visible = xlSheetVisible
-    End If
-    On Error GoTo 0
-End Sub
 
 Public Sub SetGridlinesOff_AllSheetsViews(ByVal wb As Workbook)
     Dim w As Window, ws As Worksheet
@@ -363,6 +959,34 @@ Public Sub SetGridlinesOff_AllSheetsViews(ByVal wb As Workbook)
             w.DisplayGridlines = False
         Next ws
     Next w
+    On Error GoTo 0
+End Sub
+
+Private Sub NormalizeAllSheetViews(ByVal wb As Workbook)
+    Dim ws As Worksheet
+    Dim w As Window
+
+    If wb Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    For Each w In wb.Windows
+        w.View = xlNormalView
+        w.DisplayGridlines = False
+    Next w
+
+    For Each ws In wb.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            ws.Activate
+            ws.DisplayPageBreaks = False
+            If ActiveWindow Is Nothing Then GoTo NextSheet
+            ActiveWindow.View = xlNormalView
+            ActiveWindow.DisplayGridlines = False
+            ws.Range("A1").Select
+            ActiveWindow.ScrollRow = 1
+            ActiveWindow.ScrollColumn = 1
+        End If
+NextSheet:
+    Next ws
     On Error GoTo 0
 End Sub
 

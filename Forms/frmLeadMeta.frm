@@ -30,7 +30,7 @@ Private Sub UserForm_Initialize()
     On Error GoTo EH
 
     ModNovancesTheme.AppliquerTheme Me
-    ModNovancesTheme.AjouterBarreTitre Me, "Paramï¿½tres"
+    ModNovancesTheme.AjouterBarreTitre Me, "Paramètres"
 
     SetCtrlCaptionIfExists "", "Informations dossier"
 
@@ -42,6 +42,10 @@ Private Sub UserForm_Initialize()
         SetCtrlValueIfExists "chkKE", CBool(gGenerateInKE)
     Else
         WarnMissingChkKE
+    End If
+
+    If ControlExists("chkPDF") Then
+        SetCtrlValueIfExists "chkPDF", CBool(gExportPDF)
     End If
 
     If ExportModeControlsAvailable() Then
@@ -98,6 +102,11 @@ Private Sub cmdOK_Click()
     Else
         WarnMissingExportControls
         gExportMode = emFS
+    End If
+
+    'Export PDF complementaire
+    If ControlExists("chkPDF") Then
+        gExportPDF = CBool(GetCtrlValueIfExists("chkPDF", False))
     End If
 
     Unload Me
@@ -307,6 +316,8 @@ Private Sub SetCtrlEnabledIfExists(ByVal ctrlName As String, ByVal v As Boolean)
     If Not c Is Nothing Then CallByName c, "Enabled", VbLet, v
     On Error GoTo 0
 End Sub
+
+
 
 
 

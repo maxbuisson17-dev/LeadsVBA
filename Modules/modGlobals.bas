@@ -57,3 +57,19 @@ Public gEntryPointWasYes    As Boolean
 Public gDetailRowRanges    As Object
 Public gKScalingApplied    As Boolean
 Public gMetaAppliedToParam As Boolean
+Public gExportPDF          As Boolean
+Public gLastExportSucceeded As Boolean
+Public gLastExportedWorkbook As Workbook
+
+' ============================================================
+' GESTABLE : onglets de gestion centralises
+' SIG, SIG_detail, CAF, BFR, TFT
+' Utiliser cette fonction partout au lieu de tester les noms
+' en dur pour faciliter la maintenance.
+' ============================================================
+Public Function IsGestTableSheet(ByVal sheetName As String) As Boolean
+    Select Case LCase$(Trim$(sheetName))
+        Case "sig", "sig_detail", "caf", "bfr", "tft"
+            IsGestTableSheet = True
+    End Select
+End Function
