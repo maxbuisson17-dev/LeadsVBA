@@ -127,7 +127,7 @@ Public Function PickAndLoadPreview() As Boolean
     On Error GoTo EH
 
     With Application.FileDialog(msoFileDialogFilePicker)
-        .title = "Selectionner un fichier Excel"
+        .title = "S"&ChrW$(233)&"lectionner un fichier Excel"
         .Filters.Clear
         .Filters.Add "Fichiers Excel", "*.xlsx;*.xlsm;*.xls"
         .AllowMultiSelect = False
@@ -340,7 +340,7 @@ Public Sub RunGenerateLeads_V4()
     ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4
 
     If Err.Number = 0 Then
-        MsgBox "Fichier g�n�r� et enregistr� avec succ�s.", vbInformation
+        MsgBox "Fichier g"&ChrW$(233)&"n"&ChrW$(233)&"r"&ChrW$(233)&" et enregistr"&ChrW$(233)&" avec succ"&ChrW$(232)&"s.", vbInformation
     End If
     If Err.Number = 0 Then exportSucceeded = gLastExportSucceeded
 
@@ -449,7 +449,7 @@ Public Function PromptSaveAsPath_NoUI(ByVal initialPath As String) As Variant
     PromptSaveAsPath_NoUI = Application.GetSaveAsFilename( _
         InitialFileName:=initialPath, _
         FileFilter:="Classeur Excel (*.xlsx), *.xlsx", _
-        title:="Enregistrer le fichier g�n�r�")
+        title:="Enregistrer le fichier g&"ChrW$(233)&"n"&ChrW$(233)&"r"&ChrW$(233)&")
     Exit Function
 EH:
     PromptSaveAsPath_NoUI = False

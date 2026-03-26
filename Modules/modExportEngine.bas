@@ -267,6 +267,9 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     Dim printableList As String
     Dim count         As Long
     Dim i             As Long
+    Dim pageStartMap  As Object
+    Dim currentPdfPage As Long
+    Dim pageCountForSheet As Long
     Dim startCol      As Long
     Dim lastNumCol    As Long
     Dim firstPrintRow As Long
@@ -280,6 +283,7 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     Dim errDesc       As String
 
     On Error GoTo EH
+    Set pageStartMap = CreateObject("Scripting.Dictionary")
 
     ' Chemin PDF : meme dossier, meme nom de base
     If LCase$(Right$(xlsxPath, 5)) = ".xlsx" Then
@@ -349,6 +353,7 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     On Error Resume Next
     Application.PrintCommunication = False
     On Error GoTo EH
+    currentPdfPage = 1
 
     For i = 0 To UBound(names)
         Set ws = wbOut.Worksheets(names(i))
@@ -401,22 +406,24 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
             .PrintArea = pArea
             .Orientation = xlPortrait
             .PaperSize = xlPaperA4
-            .FirstPageNumber = 1
+            .FirstPageNumber = currentPdfPage
             If LCase$(Trim$(ws.Name)) = "sommaire" Then
                 .LeftMargin = Application.CentimetersToPoints(2.5)
                 .RightMargin = Application.CentimetersToPoints(2.5)
                 .TopMargin = Application.CentimetersToPoints(4)
                 .BottomMargin = Application.CentimetersToPoints(4)
+                .CenterHorizontally = True
+                .CenterVertically = True
             Else
                 .LeftMargin = Application.CentimetersToPoints(1)
                 .RightMargin = Application.CentimetersToPoints(1)
                 .TopMargin = Application.CentimetersToPoints(1.5)
                 .BottomMargin = Application.CentimetersToPoints(1.5)
+                .CenterHorizontally = True
+                .CenterVertically = False
             End If
             .HeaderMargin = Application.CentimetersToPoints(0.5)
             .FooterMargin = Application.CentimetersToPoints(0.5)
-            .CenterHorizontally = True
-            .CenterVertically = True
             .FitToPagesWide = 1
             .FitToPagesTall = 0
         End With
@@ -429,6 +436,10 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
             Err.Raise setupErr, "ExportPDF_FromWbOut", "PageSetup sur '" & ws.Name & "' : " & setupDesc
         End If
 
+        pageStartMap(ws.Name) = currentPdfPage
+        pageCountForSheet = GetPdfPageCountForSheet(ws)
+        If pageCountForSheet < 1 Then pageCountForSheet = 1
+        currentPdfPage = currentPdfPage + pageCountForSheet
         modKETrace.LogKE "PageSetup done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
         Set ws = Nothing
     Next i
@@ -442,7 +453,7 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     On Error GoTo EH
     For i = 0 To UBound(names)
         Set ws = wbOut.Worksheets(names(i))
-        ApplyHeaderBySheet ws
+        ApplyHeaderBySheet ws, CLng(pageStartMap(ws.Name))
     Next i
     On Error Resume Next
     Application.PrintCommunication = True
@@ -819,7 +830,7 @@ Private Sub DeleteSheetScopedNameIfExists(ByVal ws As Worksheet, ByVal localName
     On Error GoTo 0
 End Sub
 
-Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet)
+Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet, Optional ByVal firstPdfPageNumber As Long = 1)
     Dim rightHeaderText As String
     Dim label           As String
 
@@ -848,15 +859,14 @@ Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet)
             Case "BS"
                 .DifferentFirstPageHeaderFooter = True
                 .OddAndEvenPagesHeaderFooter = True
-                .FirstPage.RightHeader.Text = BuildRightHeaderText("ACTIF")
-                .EvenPage.RightHeader.Text = BuildRightHeaderText("PASSIF")
-                .RightHeader = BuildRightHeaderText("COMPTE DE RESULTAT")
+                ConfigureThreePageHeaders ws.PageSetup, firstPdfPageNumber, "ACTIF", "PASSIF", "COMPTE DE RESULTAT"
             Case "BS_DETAIL"
                 .DifferentFirstPageHeaderFooter = True
                 .OddAndEvenPagesHeaderFooter = True
-                .FirstPage.RightHeader.Text = BuildRightHeaderText("ACTIF d" & ChrW$(233) & "taill" & ChrW$(233))
-                .EvenPage.RightHeader.Text = BuildRightHeaderText("PASSIF d" & ChrW$(233) & "taill" & ChrW$(233))
-                .RightHeader = BuildRightHeaderText("COMPTE DE RESULTAT d" & ChrW$(233) & "taill" & ChrW$(233))
+                ConfigureThreePageHeaders ws.PageSetup, firstPdfPageNumber, _
+                    "ACTIF d" & ChrW$(233) & "taill" & ChrW$(233), _
+                    "PASSIF d" & ChrW$(233) & "taill" & ChrW$(233), _
+                    "COMPTE DE RESULTAT d" & ChrW$(233) & "taill" & ChrW$(233)
             Case Else
                 rightHeaderText = BuildRightHeaderText(label)
                 .RightHeader = rightHeaderText
@@ -881,6 +891,20 @@ Private Function BuildRightHeaderText(ByVal label As String) As String
 
     BuildRightHeaderText = "&16&B" & EscapeHeaderText(label) & "&B" & Chr$(10) & "&12 " & metaLine
 End Function
+
+Private Sub ConfigureThreePageHeaders(ByVal ps As PageSetup, ByVal firstPdfPageNumber As Long, ByVal firstLabel As String, ByVal secondLabel As String, ByVal thirdLabel As String)
+    If ps Is Nothing Then Exit Sub
+
+    ps.FirstPage.RightHeader.Text = BuildRightHeaderText(firstLabel)
+
+    If (firstPdfPageNumber + 1) Mod 2 = 0 Then
+        ps.EvenPage.RightHeader.Text = BuildRightHeaderText(secondLabel)
+        ps.RightHeader = BuildRightHeaderText(thirdLabel)
+    Else
+        ps.RightHeader = BuildRightHeaderText(secondLabel)
+        ps.EvenPage.RightHeader.Text = BuildRightHeaderText(thirdLabel)
+    End If
+End Sub
 
 Private Function GetFormattedExerciceForHeader() As String
     Dim dExo As Date
@@ -917,6 +941,17 @@ End Function
 
 Private Function EscapeHeaderText(ByVal rawText As String) As String
     EscapeHeaderText = Replace(rawText, "&", "&&")
+End Function
+
+Private Function GetPdfPageCountForSheet(ByVal ws As Worksheet) As Long
+    On Error Resume Next
+    If ws Is Nothing Then Exit Function
+    GetPdfPageCountForSheet = ws.HPageBreaks.Count + 1
+    If Err.Number <> 0 Or GetPdfPageCountForSheet < 1 Then
+        Err.Clear
+        GetPdfPageCountForSheet = 1
+    End If
+    On Error GoTo 0
 End Function
 
 Private Sub ApplyBSPageBreaksFromMarker(ByVal ws As Worksheet, ByVal markers As Range)
