@@ -17,7 +17,7 @@ Public Sub ApplyMetaToSourceParamSheet(ByVal wbSource As Workbook)
     If Not IsValidExerciceDate_UI(gExercice, dExo) Then Err.Raise vbObjectError + 1403, , "Date d'exercice invalide."
 
     If gGenerateInKE Then
-        unitLabel = "en KE"
+        unitLabel = "en K€"
     Else
         unitLabel = "en euros"
     End If

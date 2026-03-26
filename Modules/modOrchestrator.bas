@@ -79,7 +79,7 @@ Private Function PickAndLoadBalance() As Boolean
     On Error GoTo EH
 
     With Application.FileDialog(msoFileDialogFilePicker)
-        .Title = "Selectionner la balance (Compte / Libelle / Solde N / Solde N-1)"
+        .title = "Selectionner la balance (Compte / Libelle / Solde N / Solde N-1)"
         .Filters.Clear
         .Filters.Add "Fichiers supportes", "*.xlsx;*.xlsm;*.xls;*.csv;*.txt;*.dat"
         .AllowMultiSelect = False
@@ -127,7 +127,7 @@ Public Function PickAndLoadPreview() As Boolean
     On Error GoTo EH
 
     With Application.FileDialog(msoFileDialogFilePicker)
-        .Title = "Selectionner un fichier Excel"
+        .title = "Selectionner un fichier Excel"
         .Filters.Clear
         .Filters.Add "Fichiers Excel", "*.xlsx;*.xlsm;*.xls"
         .AllowMultiSelect = False
@@ -307,16 +307,16 @@ Public Sub RunGenerateLeads_V4()
         Exit Sub
     End If
 
-    oldScreen  = Application.ScreenUpdating
-    oldEvents  = Application.EnableEvents
-    oldAlerts  = Application.DisplayAlerts
-    oldCalc    = Application.Calculation
+    oldScreen = Application.ScreenUpdating
+    oldEvents = Application.EnableEvents
+    oldAlerts = Application.DisplayAlerts
+    oldCalc = Application.Calculation
 
     On Error GoTo EH
     Application.ScreenUpdating = False
-    Application.EnableEvents   = False
-    Application.DisplayAlerts  = False
-    Application.Calculation    = xlCalculationManual
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
 
     ' 1. Formules de mapping dans BG (colonnes E:S)
     InjectMappingFormulas_BG
@@ -339,14 +339,17 @@ Public Sub RunGenerateLeads_V4()
     exportSucceeded = False
     ExportValuesCopy_WithoutLeads_ToBalanceFolder_V4
 
+    If Err.Number = 0 Then
+        MsgBox "Fichier g�n�r� et enregistr� avec succ�s.", vbInformation
+    End If
     If Err.Number = 0 Then exportSucceeded = gLastExportSucceeded
 
 CleanExit:
     ResetSourceAfterExport
     ThisWorkbook.Saved = True
-    Application.Calculation    = oldCalc
-    Application.DisplayAlerts  = oldAlerts
-    Application.EnableEvents   = oldEvents
+    Application.Calculation = oldCalc
+    Application.DisplayAlerts = oldAlerts
+    Application.EnableEvents = oldEvents
     Application.ScreenUpdating = oldScreen
     If exportSucceeded Then
         MsgBox "Fichier généré et enregistré avec succès.", vbInformation
@@ -365,7 +368,7 @@ Private Sub ApplyKEOnSourceBG()
     Dim rng As Range
     On Error GoTo EH
     Set wsBG = ThisWorkbook.Worksheets(SH_BG)
-    lastRow = wsBG.Cells(wsBG.Rows.Count, "A").End(xlUp).Row
+    lastRow = wsBG.Cells(wsBG.rows.count, "A").End(xlUp).Row
     If lastRow < BG_FIRST_ROW Then Exit Sub
     Set rng = wsBG.Range("C" & BG_FIRST_ROW & ":D" & lastRow)
     modKEScaling.DivideRangeByThousand rng
@@ -421,7 +424,7 @@ End Sub
 '
 ' La routine est entierement silencieuse :
 '   - aucun plantage si un add-in est absent ou protege
-'   - aucun message affiché
+'   - aucun message affich�
 '   - l'execution continue normalement dans tous les cas
 ' ============================================================
 Private Sub DisableAllAddins()
@@ -446,7 +449,7 @@ Public Function PromptSaveAsPath_NoUI(ByVal initialPath As String) As Variant
     PromptSaveAsPath_NoUI = Application.GetSaveAsFilename( _
         InitialFileName:=initialPath, _
         FileFilter:="Classeur Excel (*.xlsx), *.xlsx", _
-        Title:="Enregistrer le fichier généré")
+        title:="Enregistrer le fichier g�n�r�")
     Exit Function
 EH:
     PromptSaveAsPath_NoUI = False

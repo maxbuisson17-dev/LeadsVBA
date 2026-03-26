@@ -269,6 +269,8 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     Dim i             As Long
     Dim startCol      As Long
     Dim lastNumCol    As Long
+    Dim firstPrintRow As Long
+    Dim lastPrintRow  As Long
     Dim pArea         As String
     Dim expErr        As Long
     Dim expDesc       As String
@@ -380,12 +382,16 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
             modKETrace.LogKE "Hide C:D done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
         End If
 
-        startCol = ws.UsedRange.Column
-        modKETrace.LogKE "UsedRange startCol=" & CStr(startCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        lastNumCol = PDF_FindLastNumCol(ws)
-        modKETrace.LogKE "lastNumCol=" & CStr(lastNumCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        startCol = 2
+        modKETrace.LogKE "PDF startCol forced to B | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
+        lastNumCol = PDF_FindLastPrintableCol(ws)
+        modKETrace.LogKE "lastPrintableCol=" & CStr(lastNumCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
         If lastNumCol < startCol Then lastNumCol = startCol
-        pArea = PDF_ColLtr(ws, startCol) & ":" & PDF_ColLtr(ws, lastNumCol)
+        firstPrintRow = PDF_FindFirstPrintableRow(ws, startCol, lastNumCol)
+        lastPrintRow = PDF_FindLastPrintableRow(ws, startCol, lastNumCol)
+        If firstPrintRow <= 0 Then firstPrintRow = 1
+        If lastPrintRow < firstPrintRow Then lastPrintRow = firstPrintRow
+        pArea = PDF_ColLtr(ws, startCol) & CStr(firstPrintRow) & ":" & PDF_ColLtr(ws, lastNumCol) & CStr(lastPrintRow)
         modKETrace.LogKE "PageSetup area | Sheet=" & ws.Name & " | PrintArea=" & pArea, "ExportPDF_FromWbOut"
 
         On Error Resume Next
@@ -395,12 +401,22 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
             .PrintArea = pArea
             .Orientation = xlPortrait
             .PaperSize = xlPaperA4
-            .LeftMargin = Application.CentimetersToPoints(1)
-            .RightMargin = Application.CentimetersToPoints(1)
-            .TopMargin = Application.CentimetersToPoints(1.5)
-            .BottomMargin = Application.CentimetersToPoints(1.5)
+            .FirstPageNumber = 1
+            If LCase$(Trim$(ws.Name)) = "sommaire" Then
+                .LeftMargin = Application.CentimetersToPoints(2.5)
+                .RightMargin = Application.CentimetersToPoints(2.5)
+                .TopMargin = Application.CentimetersToPoints(4)
+                .BottomMargin = Application.CentimetersToPoints(4)
+            Else
+                .LeftMargin = Application.CentimetersToPoints(1)
+                .RightMargin = Application.CentimetersToPoints(1)
+                .TopMargin = Application.CentimetersToPoints(1.5)
+                .BottomMargin = Application.CentimetersToPoints(1.5)
+            End If
             .HeaderMargin = Application.CentimetersToPoints(0.5)
             .FooterMargin = Application.CentimetersToPoints(0.5)
+            .CenterHorizontally = True
+            .CenterVertically = True
             .FitToPagesWide = 1
             .FitToPagesTall = 0
         End With
@@ -487,36 +503,88 @@ EH:
     MsgBox "Erreur export PDF (" & errNum & ") :" & vbCrLf & errDesc, vbCritical
 End Sub
 
-' Detecte la derniere colonne contenant au moins une valeur numerique non nulle
-' (scan de la ligne 2 au bas de UsedRange pour exclure les en-tetes texte).
-Private Function PDF_FindLastNumCol(ByVal ws As Worksheet) As Long
+' Detecte la derniere colonne contenant au moins une donnee non vide
+' en ignorant la colonne A pour la zone d'impression PDF.
+Private Function PDF_FindLastPrintableCol(ByVal ws As Worksheet) As Long
     Dim lastC As Long, lastR As Long
     Dim c As Long, r As Long
     Dim v As Variant
 
     lastC = ws.UsedRange.Column + ws.UsedRange.Columns.Count - 1
     lastR = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
-    If lastR < 2 Then lastR = 2
+    If lastR < 1 Then lastR = 1
+    If lastC < 2 Then
+        PDF_FindLastPrintableCol = 2
+        Exit Function
+    End If
 
-    For c = lastC To 1 Step -1
-        For r = 2 To lastR
+    For c = lastC To 2 Step -1
+        For r = 1 To lastR
             v = ws.Cells(r, c).Value
-            ' VBA evalue tous les operands de And :
-            ' CDbl(v) peut donc lever une erreur 13 si la cellule contient une erreur Excel.
             If Not IsError(v) Then
                 If Not IsEmpty(v) Then
-                    If IsNumeric(v) Then
-                        If CDbl(v) <> 0 Then
-                            PDF_FindLastNumCol = c
-                            Exit Function
-                        End If
+                    If Len(Trim$(CStr(v))) > 0 Then
+                        PDF_FindLastPrintableCol = c
+                        Exit Function
                     End If
                 End If
             End If
         Next r
     Next c
 
-    PDF_FindLastNumCol = lastC  ' fallback : derniere colonne utilisee
+    PDF_FindLastPrintableCol = 2
+End Function
+
+Private Function PDF_FindFirstPrintableRow(ByVal ws As Worksheet, ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim firstR As Long
+    Dim lastR As Long
+    Dim r As Long
+    Dim c As Long
+
+    firstR = ws.UsedRange.Row
+    lastR = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    If firstR < 1 Then firstR = 1
+    If lastR < firstR Then lastR = firstR
+
+    For r = firstR To lastR
+        For c = startCol To endCol
+            If PDF_CellHasPrintableValue(ws.Cells(r, c).Value) Then
+                PDF_FindFirstPrintableRow = r
+                Exit Function
+            End If
+        Next c
+    Next r
+
+    PDF_FindFirstPrintableRow = firstR
+End Function
+
+Private Function PDF_FindLastPrintableRow(ByVal ws As Worksheet, ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim firstR As Long
+    Dim lastR As Long
+    Dim r As Long
+    Dim c As Long
+
+    firstR = ws.UsedRange.Row
+    lastR = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    If firstR < 1 Then firstR = 1
+    If lastR < firstR Then lastR = firstR
+
+    For r = lastR To firstR Step -1
+        For c = startCol To endCol
+            If PDF_CellHasPrintableValue(ws.Cells(r, c).Value) Then
+                PDF_FindLastPrintableRow = r
+                Exit Function
+            End If
+        Next c
+    Next r
+
+    PDF_FindLastPrintableRow = firstR
+End Function
+
+Private Function PDF_CellHasPrintableValue(ByVal v As Variant) As Boolean
+    If IsError(v) Then Exit Function
+    If IsEmpty(v) Then Exit Function
+    PDF_CellHasPrintableValue = (Len(Trim$(CStr(v))) > 0)
 End Function
 
 ' Convertit un index de colonne en lettre(s) (ex. 8 -> "H").
@@ -679,6 +747,7 @@ End Function
 Private Function FindBSMarkerCell(ByVal ws As Worksheet, ByVal markerLabel As String, ByVal unitLabel As String) As Range
     Dim cell As Range
     Dim foundCell As Range
+    Dim normalizedMarker As String
     Dim normalizedTarget As String
     Dim normalizedFormula As String
     Dim normalizedValue As String
@@ -686,18 +755,22 @@ Private Function FindBSMarkerCell(ByVal ws As Worksheet, ByVal markerLabel As St
     If ws Is Nothing Then Exit Function
     If Application.WorksheetFunction.CountA(ws.Cells) = 0 Then Exit Function
 
+    normalizedMarker = NormalizeBSMarkerText(markerLabel)
     normalizedTarget = NormalizeBSMarkerText(markerLabel & " - " & unitLabel)
     For Each cell In ws.UsedRange.Cells
         normalizedValue = NormalizeBSMarkerText(CStr(cell.Value))
-        If normalizedValue = normalizedTarget Then
+        If normalizedValue = normalizedTarget _
+           Or normalizedValue = normalizedMarker _
+           Or Left$(normalizedValue, Len(normalizedMarker & " - ")) = normalizedMarker & " - " Then
             Set foundCell = cell
             Exit For
         End If
 
         normalizedFormula = NormalizeBSMarkerText(CStr(cell.Formula))
         If Len(normalizedFormula) > 0 Then
-            If InStr(1, normalizedFormula, NormalizeBSMarkerText(markerLabel), vbTextCompare) > 0 _
-               And InStr(1, normalizedFormula, "PARAM!$B$7", vbTextCompare) > 0 Then
+            If InStr(1, normalizedFormula, normalizedMarker, vbTextCompare) > 0 _
+               And InStr(1, normalizedFormula, "PARAM!", vbTextCompare) > 0 _
+               And InStr(1, normalizedFormula, "B7", vbTextCompare) > 0 Then
                 Set foundCell = cell
                 Exit For
             End If
@@ -713,7 +786,10 @@ Private Function NormalizeBSMarkerText(ByVal rawText As String) As String
     txt = UCase$(Trim$(rawText))
     txt = Replace(txt, vbCr, " ")
     txt = Replace(txt, vbLf, " ")
+    txt = Replace(txt, "'", "")
     txt = Replace(txt, ChrW$(160), " ")
+    txt = Replace(txt, ChrW$(8239), " ")
+    txt = Replace(txt, ChrW$(8364), "E")
     txt = Replace(txt, ChrW$(201), "E")
     txt = Replace(txt, ChrW$(200), "E")
     txt = Replace(txt, ChrW$(202), "E")
@@ -746,30 +822,11 @@ End Sub
 Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet)
     Dim rightHeaderText As String
     Dim label           As String
-    Dim client          As String
-    Dim exoDate         As String
-    Dim metaLine        As String
 
     On Error Resume Next
     If ws Is Nothing Then Exit Sub
 
     label   = EscapeHeaderText(GetHeaderDisplayName(ws.Name))
-    client  = Trim$(EscapeHeaderText(gClient))
-    exoDate = EscapeHeaderText(GetFormattedExerciceForHeader())
-
-    ' Construire la ligne client - date (client optionnel)
-    If Len(client) > 0 Then
-        metaLine = client & " - " & exoDate
-    Else
-        metaLine = exoDate
-    End If
-
-    ' Format en-tete droit :
-    '   ligne 1 : nom de l onglet en 12pt gras
-    '   ligne 2 : client - date en 9pt normal
-    ' NOTE : espace apres &09 obligatoire pour eviter la collision si metaLine
-    '        commence par un chiffre (&09"06..." serait lu &096 = 96pt par Excel)
-    rightHeaderText = "&16&B" & label & "&B" & Chr$(10) & "&12 " & metaLine
 
     With ws.PageSetup
         .DifferentFirstPageHeaderFooter = False
@@ -777,13 +834,53 @@ Private Sub ApplyHeaderBySheet(ByVal ws As Worksheet)
         .LeftHeader   = vbNullString
         .CenterHeader = vbNullString
         .RightHeader  = vbNullString
+        .EvenPage.LeftHeader.Text = vbNullString
+        .EvenPage.CenterHeader.Text = vbNullString
+        .EvenPage.RightHeader.Text = vbNullString
+        .FirstPage.LeftHeader.Text = vbNullString
+        .FirstPage.CenterHeader.Text = vbNullString
+        .FirstPage.RightHeader.Text = vbNullString
         .LeftFooter   = vbNullString
         .CenterFooter = vbNullString
         .RightFooter  = vbNullString
-        .RightHeader  = rightHeaderText
+
+        Select Case UCase$(Trim$(ws.Name))
+            Case "BS"
+                .DifferentFirstPageHeaderFooter = True
+                .OddAndEvenPagesHeaderFooter = True
+                .FirstPage.RightHeader.Text = BuildRightHeaderText("ACTIF")
+                .EvenPage.RightHeader.Text = BuildRightHeaderText("PASSIF")
+                .RightHeader = BuildRightHeaderText("COMPTE DE RESULTAT")
+            Case "BS_DETAIL"
+                .DifferentFirstPageHeaderFooter = True
+                .OddAndEvenPagesHeaderFooter = True
+                .FirstPage.RightHeader.Text = BuildRightHeaderText("ACTIF d" & ChrW$(233) & "taill" & ChrW$(233))
+                .EvenPage.RightHeader.Text = BuildRightHeaderText("PASSIF d" & ChrW$(233) & "taill" & ChrW$(233))
+                .RightHeader = BuildRightHeaderText("COMPTE DE RESULTAT d" & ChrW$(233) & "taill" & ChrW$(233))
+            Case Else
+                rightHeaderText = BuildRightHeaderText(label)
+                .RightHeader = rightHeaderText
+        End Select
     End With
     On Error GoTo 0
 End Sub
+
+Private Function BuildRightHeaderText(ByVal label As String) As String
+    Dim client As String
+    Dim exoDate As String
+    Dim metaLine As String
+
+    client = Trim$(EscapeHeaderText(gClient))
+    exoDate = EscapeHeaderText(GetFormattedExerciceForHeader())
+
+    If Len(client) > 0 Then
+        metaLine = client & " - " & exoDate
+    Else
+        metaLine = exoDate
+    End If
+
+    BuildRightHeaderText = "&16&B" & EscapeHeaderText(label) & "&B" & Chr$(10) & "&12 " & metaLine
+End Function
 
 Private Function GetFormattedExerciceForHeader() As String
     Dim dExo As Date
@@ -797,16 +894,24 @@ End Function
 
 Private Function GetHeaderDisplayName(ByVal sheetName As String) As String
     Select Case UCase$(Trim$(sheetName))
+        Case "SOMMAIRE"
+            GetHeaderDisplayName = "SOMMAIRE"
         Case "BS"
-            GetHeaderDisplayName = "Etats financiers"
+            GetHeaderDisplayName = "ACTIF"
         Case "BS_DETAIL"
-            GetHeaderDisplayName = "Etats financiers d" & ChrW$(233) & "taill" & ChrW$(233) & "s"
+            GetHeaderDisplayName = "ACTIF d" & ChrW$(233) & "taill" & ChrW$(233)
         Case "SIG"
-            GetHeaderDisplayName = "Soldes Interm" & ChrW$(233) & "diaires de gestion"
+            GetHeaderDisplayName = "Soldes interm" & ChrW$(233) & "diaires de gestion"
         Case "SIG_DETAIL"
-            GetHeaderDisplayName = "Soldes Interm" & ChrW$(233) & "diaires de gestion d" & ChrW$(233) & "taill" & ChrW$(233) & "s"
+            GetHeaderDisplayName = "Soldes interm" & ChrW$(233) & "diaires de gestion d" & ChrW$(233) & "taill" & ChrW$(233)
+        Case "CAF"
+            GetHeaderDisplayName = "Capacit" & ChrW$(233) & " d'autofinancement"
+        Case "BFR"
+            GetHeaderDisplayName = "Besoin en fond de roulement"
+        Case "TFT"
+            GetHeaderDisplayName = "Tableau de flux de tr" & ChrW$(233) & "sorerie"
         Case Else
-            GetHeaderDisplayName = Replace(sheetName, "_detail", " d" & ChrW$(233) & "taill" & ChrW$(233) & "s")
+            GetHeaderDisplayName = Replace(sheetName, "_detail", " d" & ChrW$(233) & "taill" & ChrW$(233))
     End Select
 End Function
 
@@ -998,6 +1103,22 @@ Public Sub HideSheetByNameCI(ByVal wbOut As Workbook, ByVal targetName As String
             Exit Sub
         End If
     Next ws
+End Sub
+
+Public Sub EnsureWorkingSheetsHidden(ByVal bHide As Boolean)
+    Dim ws As Worksheet
+    Dim shNames As Variant
+    Dim i As Long
+    shNames = Array(SH_BG, SH_BS, SH_MAP, SH_SIG)
+    On Error Resume Next
+    For i = LBound(shNames) To UBound(shNames)
+        Set ws = Nothing
+        Set ws = ThisWorkbook.Worksheets(CStr(shNames(i)))
+        If Not ws Is Nothing Then
+            ws.Visible = IIf(bHide, xlSheetHidden, xlSheetVisible)
+        End If
+    Next i
+    On Error GoTo 0
 End Sub
 
 Private Function GetExportModeFromFrmLeadMeta() As eExportMode
