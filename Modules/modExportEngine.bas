@@ -262,28 +262,21 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
     Dim delErr        As String
     Dim ws            As Worksheet
     Dim nm            As String
-    Dim names()       As String
-    Dim selectNames   As Variant
+    Dim selectNames() As String
     Dim printableList As String
-    Dim count         As Long
+    Dim sheetNames    As Collection
+    Dim labels        As Variant
     Dim i             As Long
-    Dim pageStartMap  As Object
-    Dim currentPdfPage As Long
-    Dim pageCountForSheet As Long
-    Dim startCol      As Long
-    Dim lastNumCol    As Long
-    Dim firstPrintRow As Long
-    Dim lastPrintRow  As Long
-    Dim pArea         As String
+    Dim pdfWb         As Workbook
+    Dim oldAlerts     As Boolean
     Dim expErr        As Long
     Dim expDesc       As String
-    Dim setupErr      As Long
-    Dim setupDesc     As String
     Dim errNum        As Long
     Dim errDesc       As String
 
     On Error GoTo EH
-    Set pageStartMap = CreateObject("Scripting.Dictionary")
+    Set sheetNames = New Collection
+    oldAlerts = Application.DisplayAlerts
 
     ' Chemin PDF : meme dossier, meme nom de base
     If LCase$(Right$(xlsxPath, 5)) = ".xlsx" Then
@@ -299,168 +292,79 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
         End If
     End If
 
-    ' Collecter SOMMAIRE, BS, BS_detail et GestTable visibles
-    count = 0
-    For Each ws In wbOut.Worksheets
-        If ws.Visible = xlSheetVisible Then
-            nm = LCase$(Trim$(ws.Name))
-            If nm = "sommaire" Or nm = "bs" Or nm = "bs_detail" Or IsGestTableSheet(ws.Name) Then
-                count = count + 1
-            End If
-        End If
-    Next ws
-    modKETrace.LogKE "Printable sheet count=" & CStr(count), "ExportPDF_FromWbOut"
-    If count = 0 Then
-        Err.Raise vbObjectError + 1401, "ExportPDF_FromWbOut", "Aucune feuille imprimable trouvee dans wbOut."
-    End If
+    Set pdfWb = Workbooks.Add(xlWBATWorksheet)
+    pdfWb.Worksheets(1).Name = "TMP_DELETE"
 
-    ReDim names(0 To count - 1)
-    ReDim selectNames(0 To count - 1)
-    i = 0
+    On Error Resume Next
+    Application.PrintCommunication = False
+    On Error GoTo EH
 
-    ' SOMMAIRE doit sortir en premiere page si l'onglet existe et est visible.
     For Each ws In wbOut.Worksheets
         If ws.Visible = xlSheetVisible Then
             nm = LCase$(Trim$(ws.Name))
             If nm = "sommaire" Then
-                names(i) = ws.Name
-                selectNames(i) = ws.Name
-                If Len(printableList) > 0 Then printableList = printableList & ","
-                printableList = printableList & ws.Name
-                i = i + 1
+                PrepareSourceSheetForPdf ws, False
+                AppendWholeSheetForPdf ws, pdfWb, "SOMMAIRE", True, False, sheetNames, printableList
                 Exit For
             End If
         End If
     Next ws
 
+    On Error Resume Next
+    Set ws = wbOut.Worksheets(SH_BS)
+    On Error GoTo EH
+    If Not ws Is Nothing And ws.Visible = xlSheetVisible Then
+        PrepareSourceSheetForPdf ws, True
+        labels = Array("ACTIF", "PASSIF", "COMPTE DE RESULTAT")
+        AppendSheetByPageBreaksForPdf ws, pdfWb, labels, "BS", True, sheetNames, printableList
+    End If
+
+    Set ws = Nothing
+    On Error Resume Next
+    Set ws = wbOut.Worksheets("BS_detail")
+    On Error GoTo EH
+    If Not ws Is Nothing And ws.Visible = xlSheetVisible Then
+        PrepareSourceSheetForPdf ws, True
+        labels = Array("ACTIF d" & ChrW$(233) & "taill" & ChrW$(233), _
+                       "PASSIF d" & ChrW$(233) & "taill" & ChrW$(233), _
+                       "COMPTE DE RESULTAT d" & ChrW$(233) & "taill" & ChrW$(233))
+        AppendSheetByPageBreaksForPdf ws, pdfWb, labels, "BS_detail", True, sheetNames, printableList
+    End If
+
     For Each ws In wbOut.Worksheets
         If ws.Visible = xlSheetVisible Then
             nm = LCase$(Trim$(ws.Name))
-            If nm <> "sommaire" Then
-                If nm = "bs" Or nm = "bs_detail" Or IsGestTableSheet(ws.Name) Then
-                    names(i) = ws.Name
-                    selectNames(i) = ws.Name
-                    If Len(printableList) > 0 Then printableList = printableList & ","
-                    printableList = printableList & ws.Name
-                    i = i + 1
-                End If
+            If IsGestTableSheet(ws.Name) Then
+                PrepareSourceSheetForPdf ws, False
+                AppendWholeSheetForPdf ws, pdfWb, GetHeaderDisplayName(ws.Name), False, False, sheetNames, printableList
             End If
         End If
     Next ws
+
+    If sheetNames.Count = 0 Then
+        Err.Raise vbObjectError + 1401, "ExportPDF_FromWbOut", "Aucune feuille imprimable trouvee dans wbOut."
+    End If
     modKETrace.LogKE "Printable sheets=[" & printableList & "]", "ExportPDF_FromWbOut"
 
-    ' Mise en page (PrintCommunication=False evite erreurs driver pendant PageSetup)
-    On Error Resume Next
-    Application.PrintCommunication = False
-    On Error GoTo EH
-    currentPdfPage = 1
+    Application.DisplayAlerts = False
+    DeleteSheetIfExists pdfWb, "TMP_DELETE"
+    Application.DisplayAlerts = oldAlerts
 
-    For i = 0 To UBound(names)
-        Set ws = wbOut.Worksheets(names(i))
-        modKETrace.LogKE "PageSetup start | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-
-        ws.Activate
-        modKETrace.LogKE "Activate done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        On Error Resume Next
-        ws.Outline.ShowLevels RowLevels:=8, ColumnLevels:=8
-        If Err.Number <> 0 Then
-            setupErr = Err.Number
-            setupDesc = Err.Description
-            On Error GoTo EH
-            modKETrace.LogKE "ShowLevels error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
-            Err.Raise setupErr, "ExportPDF_FromWbOut", "ShowLevels sur '" & ws.Name & "' : " & setupDesc
-        End If
-        On Error GoTo EH
-        modKETrace.LogKE "ShowLevels done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-
-        If LCase$(ws.Name) = "bs" Or LCase$(ws.Name) = "bs_detail" Then
-            On Error Resume Next
-            ws.Columns("C:D").Hidden = True
-            If Err.Number <> 0 Then
-                setupErr = Err.Number
-                setupDesc = Err.Description
-                On Error GoTo EH
-                modKETrace.LogKE "Hide C:D error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
-                Err.Raise setupErr, "ExportPDF_FromWbOut", "Hide C:D sur '" & ws.Name & "' : " & setupDesc
-            End If
-            On Error GoTo EH
-            modKETrace.LogKE "Hide C:D done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        End If
-
-        startCol = 2
-        modKETrace.LogKE "PDF startCol forced to B | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        lastNumCol = PDF_FindLastPrintableCol(ws)
-        modKETrace.LogKE "lastPrintableCol=" & CStr(lastNumCol) & " | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        If lastNumCol < startCol Then lastNumCol = startCol
-        firstPrintRow = PDF_FindFirstPrintableRow(ws, startCol, lastNumCol)
-        lastPrintRow = PDF_FindLastPrintableRow(ws, startCol, lastNumCol)
-        If firstPrintRow <= 0 Then firstPrintRow = 1
-        If lastPrintRow < firstPrintRow Then lastPrintRow = firstPrintRow
-        pArea = PDF_ColLtr(ws, startCol) & CStr(firstPrintRow) & ":" & PDF_ColLtr(ws, lastNumCol) & CStr(lastPrintRow)
-        modKETrace.LogKE "PageSetup area | Sheet=" & ws.Name & " | PrintArea=" & pArea, "ExportPDF_FromWbOut"
-
-        On Error Resume Next
-        Err.Clear
-        ws.PageSetup.Zoom = False
-        With ws.PageSetup
-            .PrintArea = pArea
-            .Orientation = xlPortrait
-            .PaperSize = xlPaperA4
-            .FirstPageNumber = currentPdfPage
-            If LCase$(Trim$(ws.Name)) = "sommaire" Then
-                .LeftMargin = Application.CentimetersToPoints(2.5)
-                .RightMargin = Application.CentimetersToPoints(2.5)
-                .TopMargin = Application.CentimetersToPoints(4)
-                .BottomMargin = Application.CentimetersToPoints(4)
-                .CenterHorizontally = True
-                .CenterVertically = True
-            Else
-                .LeftMargin = Application.CentimetersToPoints(1)
-                .RightMargin = Application.CentimetersToPoints(1)
-                .TopMargin = Application.CentimetersToPoints(1.5)
-                .BottomMargin = Application.CentimetersToPoints(1.5)
-                .CenterHorizontally = True
-                .CenterVertically = False
-            End If
-            .HeaderMargin = Application.CentimetersToPoints(0.5)
-            .FooterMargin = Application.CentimetersToPoints(0.5)
-            .FitToPagesWide = 1
-            .FitToPagesTall = 0
-        End With
-        setupErr = Err.Number
-        setupDesc = Err.Description
-        On Error GoTo EH
-
-        If setupErr <> 0 Then
-            modKETrace.LogKE "PageSetup error | Sheet=" & ws.Name & " | Err=" & CStr(setupErr) & " | Desc=" & setupDesc, "ExportPDF_FromWbOut"
-            Err.Raise setupErr, "ExportPDF_FromWbOut", "PageSetup sur '" & ws.Name & "' : " & setupDesc
-        End If
-
-        pageStartMap(ws.Name) = currentPdfPage
-        pageCountForSheet = GetPdfPageCountForSheet(ws)
-        If pageCountForSheet < 1 Then pageCountForSheet = 1
-        currentPdfPage = currentPdfPage + pageCountForSheet
-        modKETrace.LogKE "PageSetup done | Sheet=" & ws.Name, "ExportPDF_FromWbOut"
-        Set ws = Nothing
+    ReDim selectNames(0 To sheetNames.Count - 1)
+    For i = 1 To sheetNames.Count
+        selectNames(i - 1) = CStr(sheetNames(i))
     Next i
 
-    On Error Resume Next
-    Application.PrintCommunication = True
-    On Error GoTo EH
-
-    On Error Resume Next
-    Application.PrintCommunication = False
-    On Error GoTo EH
-    For i = 0 To UBound(names)
-        Set ws = wbOut.Worksheets(names(i))
-        ApplyHeaderBySheet ws, CLng(pageStartMap(ws.Name))
-    Next i
     On Error Resume Next
     Application.PrintCommunication = True
     On Error GoTo EH
 
     modKETrace.LogKE "Before Sheets(selectNames).Select", "ExportPDF_FromWbOut"
-    wbOut.Sheets(selectNames).Select
+    If sheetNames.Count = 1 Then
+        pdfWb.Worksheets(selectNames(0)).Select
+    Else
+        pdfWb.Sheets(selectNames).Select
+    End If
 
     On Error Resume Next
     Err.Clear
@@ -485,23 +389,10 @@ Public Sub ExportPDF_FromWbOut(ByVal wbOut As Workbook, ByVal xlsxPath As String
         End If
     End If
 
-    ' Restaurer mise en page
-    On Error Resume Next
-    For i = 0 To UBound(names)
-        Set ws = wbOut.Worksheets(names(i))
-        If Not ws Is Nothing Then
-            ws.PageSetup.PrintArea = ""
-            ws.PageSetup.Zoom = 100
-            ws.Outline.ShowLevels RowLevels:=1, ColumnLevels:=1
-            If LCase$(ws.Name) = "bs" Or LCase$(ws.Name) = "bs_detail" Then
-                ws.Columns("C:D").Hidden = True
-            End If
-        End If
-        Set ws = Nothing
-    Next i
-    On Error GoTo EH
-
-    wbOut.Worksheets(names(0)).Select
+    RestoreSourceSheetsAfterPdf wbOut
+    Application.DisplayAlerts = False
+    pdfWb.Close SaveChanges:=False
+    Application.DisplayAlerts = oldAlerts
     modKETrace.LogKE "SUCCESS | pdfPath=" & pdfPath, "ExportPDF_FromWbOut"
     Exit Sub
 EH:
@@ -509,9 +400,228 @@ EH:
     errDesc = Err.Description
     On Error Resume Next
     Application.PrintCommunication = True
+    RestoreSourceSheetsAfterPdf wbOut
+    Application.DisplayAlerts = False
+    If Not pdfWb Is Nothing Then pdfWb.Close SaveChanges:=False
+    Application.DisplayAlerts = oldAlerts
     modKETrace.LogKE "ERROR PDF " & errNum & " : " & errDesc, "ExportPDF_FromWbOut"
     On Error GoTo 0
     MsgBox "Erreur export PDF (" & errNum & ") :" & vbCrLf & errDesc, vbCritical
+End Sub
+
+' Prepare la feuille source du wbOut avant copie vers le classeur PDF temporaire.
+Private Sub PrepareSourceSheetForPdf(ByVal ws As Worksheet, ByVal hideCD As Boolean)
+    If ws Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    ws.Activate
+    ws.Outline.ShowLevels RowLevels:=8, ColumnLevels:=8
+    If hideCD Then ws.Columns("C:D").Hidden = True
+    On Error GoTo 0
+End Sub
+
+Private Sub AppendWholeSheetForPdf(ByVal srcWs As Worksheet, ByVal pdfWb As Workbook, ByVal headerLabel As String, _
+                                   ByVal isSommaire As Boolean, ByVal hideCD As Boolean, _
+                                   ByRef sheetNames As Collection, ByRef printableList As String)
+    Dim firstRow As Long
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim pdfWs As Worksheet
+
+    If srcWs Is Nothing Or pdfWb Is Nothing Then Exit Sub
+
+    lastCol = PDF_FindLastPrintableCol(srcWs)
+    firstRow = PDF_FindFirstPrintableRow(srcWs, 2, lastCol)
+    lastRow = PDF_FindLastPrintableRow(srcWs, 2, lastCol)
+
+    srcWs.Copy After:=pdfWb.Worksheets(pdfWb.Worksheets.Count)
+    Set pdfWs = pdfWb.Worksheets(pdfWb.Worksheets.Count)
+    pdfWs.Name = GetUniqueSheetName(pdfWb, srcWs.Name)
+
+    ConfigurePdfTempSheet pdfWs, headerLabel, isSommaire, hideCD, firstRow, lastRow, False
+    sheetNames.Add pdfWs.Name
+    If Len(printableList) > 0 Then printableList = printableList & ","
+    printableList = printableList & headerLabel
+End Sub
+
+Private Sub AppendSheetByPageBreaksForPdf(ByVal srcWs As Worksheet, ByVal pdfWb As Workbook, ByVal labels As Variant, _
+                                          ByVal baseName As String, ByVal hideCD As Boolean, _
+                                          ByRef sheetNames As Collection, ByRef printableList As String)
+    Dim ranges As Variant
+    Dim lastCol As Long
+    Dim i As Long
+    Dim headerLabel As String
+    Dim pdfWs As Worksheet
+
+    If srcWs Is Nothing Or pdfWb Is Nothing Then Exit Sub
+
+    lastCol = PDF_FindLastPrintableCol(srcWs)
+    ranges = GetSheetPageRowRanges(srcWs, 2, lastCol)
+    If IsEmpty(ranges) Then Exit Sub
+
+    For i = 1 To UBound(ranges, 1)
+        If i - 1 >= LBound(labels) And i - 1 <= UBound(labels) Then
+            headerLabel = CStr(labels(i - 1))
+        Else
+            headerLabel = GetHeaderDisplayName(srcWs.Name)
+        End If
+
+        srcWs.Copy After:=pdfWb.Worksheets(pdfWb.Worksheets.Count)
+        Set pdfWs = pdfWb.Worksheets(pdfWb.Worksheets.Count)
+        pdfWs.Name = GetUniqueSheetName(pdfWb, baseName & "_" & CStr(i))
+
+        ConfigurePdfTempSheet pdfWs, headerLabel, False, hideCD, CLng(ranges(i, 1)), CLng(ranges(i, 2)), True
+        sheetNames.Add pdfWs.Name
+        If Len(printableList) > 0 Then printableList = printableList & ","
+        printableList = printableList & headerLabel
+    Next i
+End Sub
+
+Private Sub ConfigurePdfTempSheet(ByVal ws As Worksheet, ByVal headerLabel As String, ByVal isSommaire As Boolean, _
+                                  ByVal hideCD As Boolean, ByVal firstRow As Long, ByVal lastRow As Long, _
+                                  ByVal forceOnePageTall As Boolean)
+    Dim lastCol As Long
+    Dim pArea As String
+
+    If ws Is Nothing Then Exit Sub
+
+    lastCol = PDF_FindLastPrintableCol(ws)
+    If lastCol < 2 Then lastCol = 2
+    If firstRow < 1 Then firstRow = 1
+    If lastRow < firstRow Then lastRow = firstRow
+
+    On Error Resume Next
+    ws.Activate
+    ws.Outline.ShowLevels RowLevels:=8, ColumnLevels:=8
+    If hideCD Then ws.Columns("C:D").Hidden = True
+    On Error GoTo 0
+
+    pArea = PDF_ColLtr(ws, 2) & CStr(firstRow) & ":" & PDF_ColLtr(ws, lastCol) & CStr(lastRow)
+
+    On Error Resume Next
+    ws.PageSetup.Zoom = False
+    With ws.PageSetup
+        .PrintArea = pArea
+        .Orientation = xlPortrait
+        .PaperSize = xlPaperA4
+        .FirstPageNumber = xlAutomatic
+        If isSommaire Then
+            .LeftMargin = Application.CentimetersToPoints(2.5)
+            .RightMargin = Application.CentimetersToPoints(2.5)
+            .TopMargin = Application.CentimetersToPoints(4)
+            .BottomMargin = Application.CentimetersToPoints(4)
+            .CenterHorizontally = True
+            .CenterVertically = True
+        Else
+            .LeftMargin = Application.CentimetersToPoints(1)
+            .RightMargin = Application.CentimetersToPoints(1)
+            .TopMargin = Application.CentimetersToPoints(1.5)
+            .BottomMargin = Application.CentimetersToPoints(1.5)
+            .CenterHorizontally = True
+            .CenterVertically = False
+        End If
+        .HeaderMargin = Application.CentimetersToPoints(0.5)
+        .FooterMargin = Application.CentimetersToPoints(0.5)
+        .FitToPagesWide = 1
+        If forceOnePageTall Then
+            .FitToPagesTall = 1
+        Else
+            .FitToPagesTall = 0
+        End If
+    End With
+    ApplyStaticHeaderByLabel ws, headerLabel
+    On Error GoTo 0
+End Sub
+
+Private Sub ApplyStaticHeaderByLabel(ByVal ws As Worksheet, ByVal label As String)
+    If ws Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    With ws.PageSetup
+        .DifferentFirstPageHeaderFooter = False
+        .OddAndEvenPagesHeaderFooter = False
+        .LeftHeader = vbNullString
+        .CenterHeader = vbNullString
+        .RightHeader = BuildRightHeaderText(label)
+        .LeftFooter = vbNullString
+        .CenterFooter = vbNullString
+        .RightFooter = vbNullString
+        .EvenPage.LeftHeader.Text = vbNullString
+        .EvenPage.CenterHeader.Text = vbNullString
+        .EvenPage.RightHeader.Text = vbNullString
+        .FirstPage.LeftHeader.Text = vbNullString
+        .FirstPage.CenterHeader.Text = vbNullString
+        .FirstPage.RightHeader.Text = vbNullString
+    End With
+    On Error GoTo 0
+End Sub
+
+Private Function GetSheetPageRowRanges(ByVal ws As Worksheet, ByVal startCol As Long, ByVal endCol As Long) As Variant
+    Dim firstRow As Long
+    Dim lastRow As Long
+    Dim breaks() As Long
+    Dim outArr() As Variant
+    Dim i As Long
+    Dim breakCount As Long
+    Dim hp As HPageBreak
+
+    If ws Is Nothing Then Exit Function
+
+    firstRow = PDF_FindFirstPrintableRow(ws, startCol, endCol)
+    lastRow = PDF_FindLastPrintableRow(ws, startCol, endCol)
+    If firstRow < 1 Then firstRow = 1
+    If lastRow < firstRow Then lastRow = firstRow
+
+    breakCount = 0
+    For Each hp In ws.HPageBreaks
+        If hp.Location.Row > firstRow And hp.Location.Row <= lastRow Then
+            breakCount = breakCount + 1
+            If breakCount = 1 Then
+                ReDim breaks(1 To 1)
+            Else
+                ReDim Preserve breaks(1 To breakCount)
+            End If
+            breaks(breakCount) = hp.Location.Row
+        End If
+    Next hp
+
+    ReDim outArr(1 To breakCount + 1, 1 To 2)
+    If breakCount = 0 Then
+        outArr(1, 1) = firstRow
+        outArr(1, 2) = lastRow
+        GetSheetPageRowRanges = outArr
+        Exit Function
+    End If
+
+    outArr(1, 1) = firstRow
+    outArr(1, 2) = breaks(1) - 1
+    For i = 2 To breakCount
+        outArr(i, 1) = breaks(i - 1)
+        outArr(i, 2) = breaks(i) - 1
+    Next i
+    outArr(breakCount + 1, 1) = breaks(breakCount)
+    outArr(breakCount + 1, 2) = lastRow
+
+    GetSheetPageRowRanges = outArr
+End Function
+
+Private Sub RestoreSourceSheetsAfterPdf(ByVal wbOut As Workbook)
+    Dim ws As Worksheet
+
+    If wbOut Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    For Each ws In wbOut.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            ws.PageSetup.PrintArea = vbNullString
+            ws.PageSetup.Zoom = 100
+            ws.Outline.ShowLevels RowLevels:=1, ColumnLevels:=1
+            If LCase$(ws.Name) = "bs" Or LCase$(ws.Name) = "bs_detail" Then
+                ws.Columns("C:D").Hidden = True
+            End If
+        End If
+    Next ws
+    On Error GoTo 0
 End Sub
 
 ' Detecte la derniere colonne contenant au moins une donnee non vide
